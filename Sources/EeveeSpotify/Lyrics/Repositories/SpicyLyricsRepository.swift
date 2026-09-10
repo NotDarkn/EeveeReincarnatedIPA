@@ -33,13 +33,11 @@ class SpicyLyricsRepository: LyricsRepository {
 
     private static let apiUrl        = "https://api.spicylyrics.org"
     private static let authHeaderKey = "SpicyLyrics-WebAuth"
-    // Confirmed via github.com/Spikerko/spicy-lyrics/releases/latest (6.1.1,
-    // released 14 Jun) that this is genuinely the current shipped version —
-    // the version-mismatch theory was a dead end, not the cause of the
-    // Static-vs-Syllable discrepancy. Leaving this accurate for future-proofing
-    // (the server may still reject very stale versions eventually) but it is
-    // NOT the explanation for the current bug.
-    private static let clientVersion = "6.1.1"
+    // Bumped to match the real client's shipped ProjectVersion
+    // (project/config.ts). Version alone was a dead end for the
+    // Static/Line-vs-Syllable discrepancy — see the "X-mode" header below,
+    // added alongside this bump, which is the actual missing piece.
+    private static let clientVersion = "6.3.15"
 
     // MARK: - Token wait
     //
@@ -58,7 +56,63 @@ class SpicyLyricsRepository: LyricsRepository {
 
     // MARK: - Network
 
+    // Real client behavior (fetchLyrics.ts / LyricsQueueRetry.ts): a 503 means
+    // the server accepted the request but the track's lyrics are still being
+    // generated — it's queued, not missing. The real client shows a "hang
+    // tight" loader and keeps polling indefinitely with backoff
+    // (base=2000ms, factor=1.5x per attempt, capped at 10s) until it
+    // resolves or the track changes. This was previously funneled into
+    // `default` below, which threw .noSuchSong immediately on 503 — that's
+    // what fell straight through to Genius/Musixmatch/Lrclib fallback
+    // (lower-fidelity Line/Static/plain data) instead of getting the real
+    // Syllable data a few seconds later, explaining songs that "sometimes"
+    // come back word-synced and sometimes don't.
+    //
+    // Mirrors the real formula (2000 * 1.5^attempt, capped 10s) but bounded
+    // to 5 retries (~26s total) rather than running indefinitely — this call
+    // is synchronous and blocks the calling background thread, so it can't
+    // loop forever the way the real client's independent setTimeout-driven
+    // controller can. If the track is still queued after that, fall back
+    // like before rather than hanging.
+    private static let queuedRetryDelays: [TimeInterval] = {
+        (0 ..< 5).map { attempt in min(10.0, 2.0 * pow(1.5, Double(attempt))) }
+    }()
+
     private func performQuery(trackId: String) throws -> Data {
+        for (attempt, delay) in ([0.0] + SpicyLyricsRepository.queuedRetryDelays).enumerated() {
+            if delay > 0 {
+                writeDebugLog("[SpicyLyrics] Track \(trackId) queued (503) — retrying in \(delay)s (attempt \(attempt + 1))")
+                Thread.sleep(forTimeInterval: delay)
+            }
+            let (data, httpStatus) = try performQueryOnce(trackId: trackId)
+            if httpStatus != 503 { return data }
+        }
+        writeDebugLog("[SpicyLyrics] Track \(trackId) still queued after all retries — giving up")
+        throw LyricsError.noSuchSong
+    }
+
+    /// Single request attempt. Returns the raw envelope bytes alongside the
+    /// query's own httpStatus (peeked out of the envelope here, ahead of
+    /// parseLyricsData's own real parse of it) purely so performQuery can
+    /// decide whether to retry — parseLyricsData still does the real
+    /// envelope parsing and status handling on whichever attempt succeeds.
+    private func performQueryOnce(trackId: String) throws -> (Data, Int) {
+        let data = try performRequest(trackId: trackId)
+        guard
+            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let queriesRaw = json["queries"] as? [[String: Any]],
+            let matchedQuery = queriesRaw.first(where: { $0["operationId"] as? String == "0" }),
+            let result = matchedQuery["result"] as? [String: Any]
+        else {
+            // Malformed envelope — let parseLyricsData handle (and log) this
+            // properly rather than duplicating that error path here.
+            return (data, 0)
+        }
+        let httpStatus = result["httpStatus"] as? Int ?? 0
+        return (data, httpStatus)
+    }
+
+    private func performRequest(trackId: String) throws -> Data {
         guard let url = URL(string: "\(SpicyLyricsRepository.apiUrl)/query") else {
             throw LyricsError.decodingError
         }
@@ -80,13 +134,25 @@ class SpicyLyricsRepository: LyricsRepository {
         request.httpMethod = "POST"
         request.setValue("application/json",                   forHTTPHeaderField: "Content-Type")
         request.setValue(SpicyLyricsRepository.clientVersion, forHTTPHeaderField: "SpicyLyrics-Version")
+        // Confirmed against the real client's Query.ts: every request sends
+        // this alongside SpicyLyrics-Version, unconditionally, with no
+        // branching logic elsewhere in that file — it isn't a device/UA
+        // signal, it's a flat request flag. This was missing here entirely,
+        // which is the actual explanation for the Static/Line-vs-Syllable
+        // discrepancy the sec-ch-ua/Client-Hints headers below were guessed
+        // at fixing and didn't: the server was very possibly falling back to
+        // a lower-fidelity response format without it.
+        request.setValue("2", forHTTPHeaderField: "X-mode")
 
-        // Match the real desktop Spicetify request's identity headers — captured
-        // via mitmproxy from an actual desktop session that returned Syllable
-        // (word-synced) data. Origin/Referer/User-Agent alone got us from Static
-        // to Line — these additional Client Hints / Sec-Fetch headers are the
-        // remaining gap to close, in case the server uses sec-ch-ua-mobile or
-        // sec-ch-ua-platform to decide whether to serve full Syllable data.
+        // Spoofed browser identity headers (Origin/Referer/User-Agent/Client
+        // Hints/Sec-Fetch), captured via mitmproxy from a real desktop
+        // session. These aren't things the extension's own JS sets — inside
+        // Spotify's actual Chromium runtime the browser sets them
+        // automatically from the page context — so a native URLSession
+        // needs to fake them to look like that same environment. Confirmed
+        // via the real client's Query.ts that they play no role in the
+        // Static/Line-vs-Syllable discrepancy specifically (that was
+        // X-mode, above); kept here for general request realism.
         request.setValue("https://xpui.app.spotify.com",  forHTTPHeaderField: "Origin")
         request.setValue("https://xpui.app.spotify.com/", forHTTPHeaderField: "Referer")
         request.setValue(
@@ -142,7 +208,7 @@ class SpicyLyricsRepository: LyricsRepository {
 
     // MARK: - Parse
 
-    private func parseLyricsData(_ data: Data, trackId: String) throws -> LyricsDto {
+    private func parseLyricsData(_ data: Data, trackId: String, query: LyricsSearchQuery, options: LyricsOptions) throws -> LyricsDto {
         guard
             let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
             let queriesRaw = json["queries"] as? [[String: Any]]
@@ -203,7 +269,7 @@ class SpicyLyricsRepository: LyricsRepository {
         writeDebugLog("[SpicyLyrics] Lyrics type=\(type) for \(trackId)")
 
         switch type {
-        case "Syllable": return parseSyllableLyrics(packed)
+        case "Syllable": return parseSyllableLyrics(packed, trackId: trackId, query: query, options: options)
         case "Line":     return parseLineLyrics(packed)
         case "Static":   return parseStaticLyrics(packed)
         default:
@@ -214,10 +280,11 @@ class SpicyLyricsRepository: LyricsRepository {
 
     // MARK: Syllable lyrics
 
-    private func parseSyllableLyrics(_ root: SLObjPackValue) -> LyricsDto {
+    private func parseSyllableLyrics(_ root: SLObjPackValue, trackId: String, query: LyricsSearchQuery, options: LyricsOptions) -> LyricsDto {
         guard let content = root["Content"]?.arrayValue else { return emptyDto() }
 
         var lines        = [LyricsLineDto]()
+        var karaokeLines = [KaraokeLineDto]()
         var hasRomanized = root["HasTransliterations"]?.boolValue ?? false
 
         for entry in content {
@@ -225,20 +292,43 @@ class SpicyLyricsRepository: LyricsRepository {
                   let lead = entry["Lead"] else { continue }
 
             let lineText: String
+            var karaokeSyllables = [KaraokeSyllableDto]()
+
             if let syllables = lead["Syllables"]?.arrayValue, !syllables.isEmpty {
-                // Real client rule (Syllable.ts): a syllable with IsPartOfWord=true
-                // attaches directly to the previous syllable (continues the same
-                // word, e.g. "re" + "call" -> "recall"); otherwise it starts a new
-                // word and needs a preceding space. Plain .joined() (no separator)
-                // ignored this entirely, producing "Doyourecall,notlongago?".
+                // Real client rule (Syllable.ts / tools.ts): IsPartOfWord is a
+                // FORWARD-looking flag — a syllable with IsPartOfWord=true means
+                // the word continues into the *next* syllable with no gap (e.g.
+                // "Lo" (IsPartOfWord=true) + "la" -> "Lola"). So whether a space
+                // goes before the *current* syllable depends on the *previous*
+                // syllable's flag, not this one's own. (Verified directly against
+                // the real client: Syllable.ts's word-grouping gates inclusion on
+                // `lead.IsPartOfWord || (prev?.IsPartOfWord && currentWordGroup)`,
+                // and tools.ts's convertSyllableToStatic appends a space *after*
+                // a syllable only `if (!syllable.IsPartOfWord)`.) Reading this
+                // backwards (checking the current syllable's own flag to decide
+                // the preceding space, as an earlier version of this file did)
+                // is what produced broken spacing like "wasLo la" instead of
+                // "was Lola" — plain .joined() (no separator) had the same
+                // underlying problem, producing "Doyourecall,notlongago?".
                 var text = ""
+                var previousIsPartOfWord = false
                 for syllable in syllables {
                     guard let syllableText = syllable["Text"]?.stringValue else { continue }
                     let isPartOfWord = syllable["IsPartOfWord"]?.boolValue ?? false
-                    if !text.isEmpty && !isPartOfWord {
+                    if !text.isEmpty && !previousIsPartOfWord {
                         text += " "
                     }
                     text += syllableText
+                    previousIsPartOfWord = isPartOfWord
+
+                    let startMs = syllable["StartTime"]?.doubleValue.map { Int($0 * 1000) } ?? 0
+                    let endMs   = syllable["EndTime"]?.doubleValue.map { Int($0 * 1000) } ?? startMs
+                    karaokeSyllables.append(KaraokeSyllableDto(
+                        text: syllableText,
+                        startMs: startMs,
+                        endMs: endMs,
+                        isPartOfWord: isPartOfWord
+                    ))
                 }
                 lineText = text
                 if syllables.contains(where: { ($0["TransliteratedText"]?.stringValue ?? "").isEmpty == false }) {
@@ -252,13 +342,48 @@ class SpicyLyricsRepository: LyricsRepository {
 
             if (lead["TransliteratedText"]?.stringValue ?? "").isEmpty == false { hasRomanized = true }
 
-            let offsetMs = lead["StartTime"]?.doubleValue.map { Int($0 * 1000) }
-            lines.append(LyricsLineDto(content: lineText.lyricsNoteIfEmpty, offsetMs: offsetMs))
+            let lineStartMs = lead["StartTime"]?.doubleValue.map { Int($0 * 1000) } ?? 0
+            let lineEndMs   = lead["EndTime"]?.doubleValue.map { Int($0 * 1000) }
+                ?? karaokeSyllables.last?.endMs
+                ?? lineStartMs
+
+            lines.append(LyricsLineDto(content: lineText.lyricsNoteIfEmpty, offsetMs: lineStartMs))
+
+            if !karaokeSyllables.isEmpty {
+                karaokeLines.append(KaraokeLineDto(
+                    syllables: karaokeSyllables,
+                    startMs: lineStartMs,
+                    endMs: lineEndMs
+                ))
+            }
         }
 
         let romanization: LyricsRomanizationStatus = hasRomanized
             ? .romanized
             : (lines.map(\.content).canBeRomanized ? .canBeRomanized : .original)
+
+        if !karaokeLines.isEmpty {
+            let songWriters = root["SongWriters"]?.arrayValue?.compactMap { $0.stringValue } ?? []
+            let providerCode = root["source"]?.stringValue
+            let providerDisplayName = providerCode == "ext" ? root["sourceName"]?.stringValue : nil
+
+            let filledKaraokeLines = LyricsUncensorFill.fillKaraoke(
+                lines: karaokeLines,
+                query: query,
+                options: options
+            )
+
+            KaraokeLyricsStore.shared.set(
+                trackId: trackId,
+                lyrics: KaraokeLyricsDto(
+                    lines: filledKaraokeLines,
+                    songWriters: songWriters,
+                    providerCode: providerCode,
+                    providerDisplayName: providerDisplayName
+                )
+            )
+            writeDebugLog("[SpicyLyrics] Stored karaoke data: \(karaokeLines.count) lines for \(trackId)")
+        }
 
         return LyricsDto(lines: lines, timeSynced: true, romanization: romanization)
     }
@@ -311,6 +436,16 @@ class SpicyLyricsRepository: LyricsRepository {
             throw LyricsError.noSuchSong
         }
         let data = try performQuery(trackId: trackId)
-        return try parseLyricsData(data, trackId: trackId)
+        var dto = try parseLyricsData(data, trackId: trackId, query: query, options: options)
+
+        let filledContents = LyricsUncensorFill.fill(
+            lines: dto.lines.map(\.content),
+            query: query,
+            options: options
+        )
+        for (index, content) in filledContents.enumerated() where index < dto.lines.count {
+            dto.lines[index].content = content
+        }
+        return dto
     }
 }

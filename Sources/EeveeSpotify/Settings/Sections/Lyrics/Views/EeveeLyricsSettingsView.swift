@@ -19,7 +19,7 @@ struct EeveeLyricsSettingsView: View {
                     musixmatchLanguageSection()
                 }
             }
-            
+
             SpacerView()
         }
         .onReceive(viewModel.musixmatchTokenInputAlertPublisher) { showAnonymousTokenOption in
