@@ -120,6 +120,12 @@ jobs:
           SWIFTPROTOBUF_VERSION: ${{ env.SWIFTPROTOBUF_VERSION }}
         run: make build-eeveeswiftprotobuf
 
+      - name: Generate spoti.pw flag table from IPA
+        if: ${{ inputs.ipa_url != '' }}
+        run: |
+          wget "${{ inputs.ipa_url }}" --no-verbose -O "$RUNNER_TEMP/flags-ipa"
+          python3 Sources/EeveeSpotifyC/SubRepos/spoti.pw/scripts/extract-flags.py "$RUNNER_TEMP/flags-ipa"
+
         # this should save another like 10 to 15s as it'll already have Swift Support Tools built
       - name: Grab Swift Support Tools from cache
         id: swift-cache
