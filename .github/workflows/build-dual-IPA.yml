@@ -142,6 +142,16 @@ jobs:
             ${{ env.THEOS }}/vendor/orion/.build
           key: orion_build-cache-${{ env.XCODE_VERSION }}
 
+      - name: Mask decrypted .ipa URL
+        uses: levibostian/action-hide-sensitive-inputs@v1 
+
+      # as much as i don't want it to download the IPA here, it just is what it is
+      - name: Grab spoti.pw flag table
+        if: ${{ inputs.ipa_url != '' }}
+        run: |
+          wget "${{ inputs.ipa_url }}" --no-verbose -O "$RUNNER_TEMP/flags-ipa"
+          python3 Sources/EeveeSpotifyC/SubRepos/spoti.pw/scripts/extract-flags.py "$RUNNER_TEMP/flags-ipa"
+
       - name: Build .deb (${{ matrix.label }})
         if: steps.deb-eevee-cache.outputs.cache-hit != 'true'
         run: THEOS_PACKAGE_SCHEME=${{ matrix.scheme }} make package FINALPACKAGE=1
@@ -238,11 +248,6 @@ jobs:
             echo "::error::Not a valid IPA: $file_type"
             exit 1
           fi
-          
-      - name: Generate spoti.pw flag table
-        if: ${{ inputs.ipa_url != '' }}
-        run: |
-          python3 Sources/EeveeSpotifyC/SubRepos/spoti.pw/scripts/extract-flags.py "${{ github.workspace }}/spotify.ipa"
 
       - name: Download OpenSpotifySafariExtension.appex
         run: |
