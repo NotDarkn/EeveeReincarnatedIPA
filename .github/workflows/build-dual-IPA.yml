@@ -341,12 +341,14 @@ jobs:
           Tools/alt-icons-modified.sh "$OUT_IPA"
 
         # basename to grab the file name of {OUT_IPA}, then %.ipa to strip the filename from .ipa, then add -spoti.pw.ipa at the end.
+        # edit: i forgot to echo this into a github env variable :c
       - name: Generate spoti.pw flag table from IPA
         if: ${{ inputs.ipa_url != '' }}
         run: |
-          OUT_SPOTIPW="$RUNNER_TEMP/$(basename "${OUT_IPA%.ipa}")-spoti.pw.ipa"
-          cp "$OUT_IPA" "$OUT_SPOTIPW"
-          python3 Sources/EeveeSpotifyC/SubRepos/spoti.pw/scripts/extract-flags.py "$OUT_SPOTIPW"
+          OUT_PW="$RUNNER_TEMP/$(basename "${OUT_IPA%.ipa}")-spoti.pw.ipa"
+          cp "$OUT_IPA" "$OUT_PW"
+          echo "OUT_PW=$OUT_PW" >> $GITHUB_ENV 
+          python3 Sources/EeveeSpotifyC/SubRepos/spoti.pw/scripts/extract-flags.py "$OUT_PW"
 
       - name: Upload Regular IPA artifact
         uses: actions/upload-artifact@v7
@@ -359,7 +361,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: EeveePrebuilt-${{ matrix.variant }}
-          path: ${{ env.OUT_SPOTIPW }}
+          path: ${{ env.OUT_PW }}
           if-no-files-found: error        
 
   github-release:
