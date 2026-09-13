@@ -360,7 +360,7 @@ jobs:
       - name: Upload spoti.pw IPA artifact
         uses: actions/upload-artifact@v7
         with:
-          name: EeveePrebuilt-${{ matrix.variant }}
+          name: EeveePrebuilt-${{ matrix.variant }}-Spoti.pw
           path: ${{ env.OUT_PW }}
           if-no-files-found: error        
 
@@ -393,18 +393,32 @@ jobs:
           name: com.eevee.spotify_${{ env.COMMIT_ID }}-roothide
           path: release_files/deb
 
-      - name: Download unpatched IPAs
+      - name: Download unpatched IPA
         if: ${{ inputs.github_release == true }}
         uses: actions/download-artifact@v8
         with:
           name: EeveePrebuilt-Unpatched
           path: release_files/unpatched
 
-      - name: Download patched IPAs
+      - name: Download unpatched Spoti.pw IPA
+        if: ${{ inputs.github_release == true }}
+        uses: actions/download-artifact@v8
+        with:
+          name: EeveePrebuilt-Unpatched-Spoti.pw
+          path: release_files/unpatched
+
+      - name: Download patched IPA
         if: ${{ inputs.github_release == true }}
         uses: actions/download-artifact@v8
         with:
           name: EeveePrebuilt-Patched
+          path: release_files/patched
+
+      - name: Download patched Spoti.pw IPA
+        if: ${{ inputs.github_release == true }}
+        uses: actions/download-artifact@v8
+        with:
+          name: EeveePrebuilt-Patched-Spoti.pw
           path: release_files/patched
 
       - name: Get previous tag (for description)
