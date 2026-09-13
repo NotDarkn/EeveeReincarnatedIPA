@@ -1,0 +1,3 @@
+[submodule "Sources/EeveeSpotifyC/SubRepos/spoti.pw"]
+	path = Sources/EeveeSpotifyC/SubRepos/spoti.pw
+	url = https://github.com/SideloadLabs/spoti.pw.git

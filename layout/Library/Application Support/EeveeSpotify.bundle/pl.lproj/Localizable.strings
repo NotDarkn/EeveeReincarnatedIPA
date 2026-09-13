@@ -47,6 +47,7 @@ LRCLIB: Najbardziej otwarte źródło, oferuje zsynchronizowane teksty. Brakuje 
 
 Musixmatch: Używane przez Spotify, oferuje zsynchronizowane teksty dla wielu utworów. Wymaga tokenu użytkownika.";
 lyrics_additional_info = "Jeśli EeveeSpotify nie znajdzie utworu lub tekstu, pojawi się komunikat \"Nie udało się załadować tekstu\". Teksty z Genius mogą być błędne z powodu sposobu wyszukiwania utworów. W większości przypadków działa to poprawnie.";
+spicylyrics_description = "SpicyLyrics oferuje teksty karaoke słowo po słowie, korzystając z tokenu Spotify. Nie jest wymagana żadna dodatkowa konfiguracja.";
 petitlyrics_description = "PetitLyrics: Oferuje wiele zsynchronizowanych tekstów japońskich, ale niewiele międzynarodowych.";
 
 musixmatch_user_token = "Token użytkownika Musixmatch";
@@ -139,6 +140,7 @@ let_the_music_play = "Niech muzyka trwa";
 liked_songs = "Polubione utwory";
 
 contributors = "Współtwórcy";
+developer_note = "Notatka dewelopera";
 
 request_anonymous_token = "Poproś o anonimowy token";
 request_anonymous_token_description = "Wybierz „Poproś o anonimowy token”, aby zażądać token Musixmatch bez autoryzacji";													   
